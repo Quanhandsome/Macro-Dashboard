@@ -1,94 +1,206 @@
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Macro Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 20px;
-      background: #f8f9fa;
-    }
-    h1 {
-      text-align: center;
-      color: #333;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-top: 30px;
-    }
-    .card {
-      background: white;
-      padding: 20px;
-      border-radius: 12px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-    }
-    canvas {
-      width: 100% !important;
-      height: 300px !important;
-    }
-  </style>
-</head>
-<body>
-  <h1>📊 Macro Dashboard</h1>
+// App.jsx
+import React, { useEffect, useState } from "react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { Card, CardContent } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
 
-  <div class="grid">
-    <div class="card">
-      <h3>Lạm phát (CPI)</h3>
-      <canvas id="cpiChart"></canvas>
-    </div>
-    <div class="card">
-      <h3>Lãi suất FED</h3>
-      <canvas id="rateChart"></canvas>
-    </div>
-    <div class="card">
-      <h3>Giá Vàng</h3>
-      <canvas id="goldChart"></canvas>
-    </div>
-    <div class="card">
-      <h3>Giá Bitcoin</h3>
-      <canvas id="btcChart"></canvas>
-    </div>
-  </div>
+const API_KEY = "2a302371de3d9e50c4820b561604a060"; // Thay key thật
+const YAHOO_SYMBOLS = {
+  sp500: "^GSPC",
+  vnindex: "^VNINDEX",
+  gold: "GC=F",
+  oil: "CL=F",
+  dxy: "DX-Y.NYB",
+  bitcoin: "BTC-USD",
+  crb: "CRBQ",
+};
 
-  <script>
-    // Dữ liệu tĩnh (sample)
-    const cpiData = [3.2, 3.5, 3.7, 3.6, 3.4, 3.3];
-    const fedRate = [5.25, 5.25, 5.5, 5.5, 5.5, 5.5];
-    const goldPrice = [1900, 1920, 1945, 1930, 1950, 1980];
-    const btcPrice = [30000, 32000, 34000, 33000, 35000, 36000];
-    const labels = ["Th1", "Th2", "Th3", "Th4", "Th5", "Th6"];
+// -------------------- Helper fetch --------------------
+async function fetchFRED(series_id) {
+  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${series_id}&api_key=${API_KEY}&file_type=json`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return data.observations.map((d) => ({
+    date: d.date,
+    value: d.value === "." ? null : parseFloat(d.value),
+  }));
+}
 
-    // Chart helper
-    function createChart(ctxId, label, data, color) {
-      new Chart(document.getElementById(ctxId), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [{
-            label,
-            data,
-            borderColor: color,
-            backgroundColor: color + "55",
-            fill: true,
-            tension: 0.3
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: true } }
-        }
-      });
+async function fetchYahoo(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=5y&interval=1d`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const timestamps = data.chart.result[0].timestamp;
+  const prices = data.chart.result[0].indicators.quote[0].close;
+  return timestamps.map((t, i) => ({
+    date: new Date(t * 1000).toISOString().split("T")[0],
+    value: prices[i],
+  }));
+}
+
+// -------------------- Filter timeframe --------------------
+function filterData(series, timeframe) {
+  if (!series) return [];
+  const grouped = {};
+
+  series.forEach((d) => {
+    const date = new Date(d.date);
+
+    if (timeframe === "year") {
+      const key = date.getFullYear();
+      if (!grouped[key]) grouped[key] = d;
+      grouped[key] = d; // lấy giá trị cuối năm
+    } else if (timeframe === "quarter") {
+      const key = `${date.getFullYear()}-Q${Math.floor(date.getMonth() / 3) + 1}`;
+      grouped[key] = d;
+    } else if (timeframe === "month") {
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      grouped[key] = d;
+    } else if (timeframe === "week") {
+      const week = Math.ceil(date.getDate() / 7);
+      const key = `${date.getFullYear()}-W${week}`;
+      grouped[key] = d;
     }
+  });
 
-    createChart("cpiChart", "CPI (%)", cpiData, "red");
-    createChart("rateChart", "FED Rate (%)", fedRate, "blue");
-    createChart("goldChart", "Gold (USD/oz)", goldPrice, "orange");
-    createChart("btcChart", "BTC (USD)", btcPrice, "green");
-  </script>
-</body>
-</html>
+  return Object.entries(grouped).map(([date, val]) => ({
+    ...val,
+    date,
+  }));
+}
+
+// -------------------- Chart component --------------------
+function ChartCard({ title, series, timeframe }) {
+  return (
+    <Card className="p-4 m-2 shadow-lg rounded-2xl">
+      <CardContent>
+        <h2 className="text-lg font-semibold mb-2">{title}</h2>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            {series.map((s, i) => (
+              <Line
+                key={i}
+                type="monotone"
+                dataKey="value"
+                data={filterData(s.data, timeframe)}
+                name={s.name}
+                stroke={s.color || "#8884d8"}
+                dot={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -------------------- App --------------------
+export default function App() {
+  const [data, setData] = useState({});
+  const [timeframe, setTimeframe] = useState("year");
+
+  useEffect(() => {
+    async function loadData() {
+      const results = {};
+
+      // FRED
+      results.gdp = await fetchFRED("GDP");
+      results.cpi = await fetchFRED("CPIAUCSL");
+      results.corecpi = await fetchFRED("CPILFESL");
+      results.pce = await fetchFRED("PCEPI");
+      results.unemployment = await fetchFRED("UNRATE");
+      results.m2 = await fetchFRED("M2SL");
+      results.fedfunds = await fetchFRED("FEDFUNDS");
+      results.yieldcurve = await fetchFRED("T10Y2Y");
+      results.consumerSentiment = await fetchFRED("UMCSENT");
+      results.pmi = await fetchFRED("NAPM");
+
+      // Yahoo
+      results.sp500 = await fetchYahoo(YAHOO_SYMBOLS.sp500);
+      results.vnindex = await fetchYahoo(YAHOO_SYMBOLS.vnindex);
+      results.gold = await fetchYahoo(YAHOO_SYMBOLS.gold);
+      results.oil = await fetchYahoo(YAHOO_SYMBOLS.oil);
+      results.dxy = await fetchYahoo(YAHOO_SYMBOLS.dxy);
+      results.bitcoin = await fetchYahoo(YAHOO_SYMBOLS.bitcoin);
+
+      setData(results);
+    }
+    loadData();
+  }, []);
+
+  return (
+    <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Filter */}
+      <div className="col-span-full flex items-center gap-4 mb-6">
+        <label className="font-semibold">Timeframe:</label>
+        <select
+          value={timeframe}
+          onChange={(e) => setTimeframe(e.target.value)}
+          className="border px-2 py-1 rounded"
+        >
+          <option value="year">Year</option>
+          <option value="quarter">Quarter</option>
+          <option value="month">Month</option>
+          <option value="week">Week</option>
+        </select>
+      </div>
+
+      {/* Charts group */}
+      <ChartCard
+        title="Lạm phát (CPI / Core CPI / PCE)"
+        timeframe={timeframe}
+        series={[
+          { name: "CPI", data: data.cpi || [], color: "#FF0000" },
+          { name: "Core CPI", data: data.corecpi || [], color: "#00AA00" },
+          { name: "PCE", data: data.pce || [], color: "#0000FF" },
+        ]}
+      />
+      <ChartCard
+        title="Kinh tế (GDP, PMI, Consumer Sentiment)"
+        timeframe={timeframe}
+        series={[
+          { name: "GDP", data: data.gdp || [], color: "#0088FE" },
+          { name: "PMI", data: data.pmi || [], color: "#FFBB28" },
+          { name: "Sentiment", data: data.consumerSentiment || [], color: "#FF8042" },
+        ]}
+      />
+      <ChartCard
+        title="Thị trường chứng khoán"
+        timeframe={timeframe}
+        series={[
+          { name: "S&P500", data: data.sp500 || [], color: "#0055FF" },
+          { name: "VNIndex", data: data.vnindex || [], color: "#FF5500" },
+        ]}
+      />
+      <ChartCard
+        title="Hàng hóa & Tiền tệ"
+        timeframe={timeframe}
+        series={[
+          { name: "Gold", data: data.gold || [], color: "#FFD700" },
+          { name: "Oil", data: data.oil || [], color: "#222222" },
+          { name: "DXY", data: data.dxy || [], color: "#00CED1" },
+        ]}
+      />
+      <ChartCard
+        title="Crypto"
+        timeframe={timeframe}
+        series={[{ name: "Bitcoin", data: data.bitcoin || [], color: "#F7931A" }]}
+      />
+      <ChartCard
+        title="Chính sách tiền tệ"
+        timeframe={timeframe}
+        series={[
+          { name: "Fed Funds Rate", data: data.fedfunds || [], color: "#006400" },
+          { name: "Yield Curve (10Y-2Y)", data: data.yieldcurve || [], color: "#800080" },
+          { name: "M2 Supply", data: data.m2 || [], color: "#FF4500" },
+        ]}
+      />
+    </div>
+  );
+}
