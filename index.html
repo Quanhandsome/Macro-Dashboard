@@ -2,192 +2,256 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Macro Dashboard</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <title>Macro Dashboard (FRED only)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{--bg:#f7f7fb;--card:#fff;--text:#111;--muted:#666;}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text)}
+    header{position:sticky;top:0;background:var(--card);border-bottom:1px solid #eaeaea;padding:12px 16px;display:flex;gap:12px;align-items:center;z-index:10}
+    h1{font-size:18px;margin:0 8px 0 0}
+    select{padding:6px 8px;border:1px solid #ddd;border-radius:8px;background:#fff}
+    main{padding:16px;display:grid;grid-template-columns:1fr;gap:16px;max-width:1400px;margin:0 auto}
+    @media (min-width:900px){main{grid-template-columns:1fr 1fr}}
+    .card{background:var(--card);border:1px solid #eee;border-radius:14px;box-shadow:0 2px 6px rgba(0,0,0,.04);padding:14px}
+    .title{margin:0 0 8px 0;font-weight:600}
+    .subtitle{margin:0 0 12px 0;color:var(--muted);font-size:13px}
+    canvas{width:100% !important;height:320px !important}
+    #status{position:fixed;right:12px;bottom:12px;max-width:520px;background:#111;color:#fff;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.4;white-space:pre-wrap;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+    #status.hidden{display:none}
+  </style>
+  <!-- Chart.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
-<body class="bg-gray-50">
-  <div id="root"></div>
+<body>
+  <header>
+    <h1>Macro Dashboard</h1>
+    <label>Timeframe:
+      <select id="timeframe">
+        <option value="a">Year</option>
+        <option value="q">Quarter</option>
+        <option value="m" selected>Month</option>
+        <option value="w">Week</option>
+      </select>
+    </label>
+    <small style="color:#888">Nguồn: FRED (free, CORS OK)</small>
+  </header>
 
-  <script type="text/javascript">
-    const { useState, useEffect } = React;
-    const {
-      LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
-    } = Recharts;
+  <div id="status" class="hidden"></div>
 
-    const API_KEY = "2a302371de3d9e50c4820b561604a060";
-    const YAHOO_SYMBOLS = {
-      sp500: "^GSPC",
-      vnindex: "^VNINDEX",
-      gold: "GC=F",
-      oil: "CL=F",
-      dxy: "DX-Y.NYB",
-      bitcoin: "BTC-USD",
+  <main>
+    <!-- Inflation -->
+    <section class="card">
+      <h3 class="title">Prices & Inflation</h3>
+      <p class="subtitle">CPI (headline), Core CPI, PCE, Core PCE</p>
+      <canvas id="inflationChart"></canvas>
+    </section>
+
+    <!-- Policy -->
+    <section class="card">
+      <h3 class="title">Policy & Yield Curve</h3>
+      <p class="subtitle">Fed Funds Rate, 10Y–2Y Spread</p>
+      <canvas id="policyChart"></canvas>
+    </section>
+
+    <!-- Money & Balance Sheet -->
+    <section class="card">
+      <h3 class="title">Money & Balance Sheet</h3>
+      <p class="subtitle">M2 (level), Fed Balance Sheet (WALCL)</p>
+      <canvas id="moneyChart"></canvas>
+    </section>
+
+    <!-- Growth -->
+    <section class="card">
+      <h3 class="title">Growth & Activity</h3>
+      <p class="subtitle">GDP, Industrial Production, Retail Sales</p>
+      <canvas id="growthChart"></canvas>
+    </section>
+
+    <!-- Sentiment -->
+    <section class="card">
+      <h3 class="title">Surveys & Sentiment</h3>
+      <p class="subtitle">PMI, UMich Consumer Sentiment</p>
+      <canvas id="sentimentChart"></canvas>
+    </section>
+
+    <!-- Equities -->
+    <section class="card">
+      <h3 class="title">Equities</h3>
+      <p class="subtitle">S&P 500 (FRED daily)</p>
+      <canvas id="equityChart"></canvas>
+    </section>
+
+    <!-- Commodities & FX -->
+    <section class="card">
+      <h3 class="title">Commodities & USD</h3>
+      <p class="subtitle">Gold (PM Fix USD), WTI Oil, Broad USD Index</p>
+      <canvas id="commoditiesChart"></canvas>
+    </section>
+
+    <!-- Crypto -->
+    <section class="card">
+      <h3 class="title">Crypto</h3>
+      <p class="subtitle">Bitcoin (Coinbase USD)</p>
+      <canvas id="btcChart"></canvas>
+    </section>
+  </main>
+
+  <script>
+    // ====== CONFIG ======
+    const FRED_KEY = "2a302371de3d9e50c4820b561604a060"; // key bro đưa
+    const START = "2005-01-01"; // có thể đổi
+
+    // Map group -> list series (id + label)
+    const SERIES = {
+      inflation: [
+        { id: "CPIAUCSL", label: "CPI (All Items)" },
+        { id: "CPILFESL", label: "Core CPI" },
+        { id: "PCEPI",    label: "PCE Price Index" },
+        { id: "PCEPILFE", label: "Core PCE" },
+      ],
+      policy: [
+        { id: "FEDFUNDS", label: "Fed Funds Rate (%)" },
+        { id: "T10Y2Y",   label: "10Y–2Y Spread (%)" },
+      ],
+      money: [
+        { id: "M2SL",  label: "M2 (Level)" },
+        { id: "WALCL", label: "Fed Balance Sheet (Total Assets)" },
+      ],
+      growth: [
+        { id: "GDP",    label: "GDP (SAAR, Bil.$)" },    // quarterly
+        { id: "INDPRO", label: "Industrial Production" },// monthly index
+        { id: "RSAFS",  label: "Retail Sales (Advance)" }// monthly $
+      ],
+      sentiment: [
+        { id: "NAPM",    label: "ISM PMI (Composite)" }, // monthly
+        { id: "UMCSENT", label: "UMich Sentiment" },     // monthly
+      ],
+      equity: [
+        { id: "SP500", label: "S&P 500" }, // daily on FRED
+      ],
+      commodities: [
+        { id: "GOLDPMGBD228NLBM", label: "Gold (PM Fix, USD/Oz)" }, // daily
+        { id: "DCOILWTICO",       label: "WTI Crude (USD/bbl)" },   // daily
+        { id: "DTWEXBGS",         label: "Broad USD Index" },       // daily/monthly
+      ],
+      btc: [
+        { id: "CBBTCUSD", label: "Bitcoin (USD)" }, // daily
+      ],
     };
 
-    async function fetchFRED(series_id) {
-      const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${series_id}&api_key=${API_KEY}&file_type=json`;
-      const res = await fetch(url);
-      const data = await res.json();
-      return data.observations.map(d => ({
-        date: d.date,
-        value: d.value === "." ? null : parseFloat(d.value)
-      }));
+    // ====== UTIL ======
+    const $ = (sel) => document.querySelector(sel);
+    const statusBox = $('#status');
+    function logStatus(msg, isError=false){
+      statusBox.classList.remove('hidden');
+      statusBox.textContent = (statusBox.textContent ? statusBox.textContent + "\n" : "") + (isError ? "⚠️ " : "ℹ️ ") + msg;
     }
 
-    async function fetchYahoo(symbol) {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=5y&interval=1d`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const timestamps = data.chart.result[0].timestamp;
-      const prices = data.chart.result[0].indicators.quote[0].close;
-      return timestamps.map((t, i) => ({
-        date: new Date(t * 1000).toISOString().split("T")[0],
-        value: prices[i]
-      }));
+    async function fetchFRED(seriesId, freqCode){
+      const u = new URL("https://api.stlouisfed.org/fred/series/observations");
+      u.searchParams.set("series_id", seriesId);
+      u.searchParams.set("api_key", FRED_KEY);
+      u.searchParams.set("file_type", "json");
+      if (START) u.searchParams.set("observation_start", START);
+      if (freqCode) u.searchParams.set("frequency", freqCode); // a/q/m/w/d
+      // You can also set aggregation_method if muốn (avg, eop)
+      const res = await fetch(u.toString());
+      if (!res.ok){
+        throw new Error(`${seriesId} HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      if (!json.observations) throw new Error(`${seriesId} invalid payload`);
+      return json.observations
+        .map(o => ({ date: o.date, value: o.value === "." ? null : Number(o.value) }))
+        .filter(d => d.value !== null && Number.isFinite(d.value));
     }
 
-    function filterData(series, timeframe) {
-      if (!series) return [];
-      const grouped = {};
-      series.forEach(d => {
-        const date = new Date(d.date);
-        let key;
-        if (timeframe === "year") {
-          key = date.getFullYear();
-        } else if (timeframe === "quarter") {
-          key = `${date.getFullYear()}-Q${Math.floor(date.getMonth() / 3) + 1}`;
-        } else if (timeframe === "month") {
-          key = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}`;
-        } else {
-          const week = Math.ceil(date.getDate()/7);
-          key = `${date.getFullYear()}-W${week}`;
-        }
-        grouped[key] = d;
-      });
-      return Object.entries(grouped).map(([date, val]) => ({...val, date}));
+    function mergeLabels(arrOfSeries){
+      const set = new Set();
+      arrOfSeries.forEach(s => s.forEach(p => set.add(p.date)));
+      return Array.from(set).sort();
     }
 
-    function ChartCard({ title, series, timeframe }) {
-      return (
-        React.createElement("div", { className: "bg-white shadow-md rounded-xl p-4 m-2" },
-          React.createElement("h2", { className: "text-lg font-semibold mb-2" }, title),
-          React.createElement(ResponsiveContainer, { width: "100%", height: 300 },
-            React.createElement(LineChart, null,
-              React.createElement(CartesianGrid, { strokeDasharray: "3 3" }),
-              React.createElement(XAxis, { dataKey: "date" }),
-              React.createElement(YAxis, null),
-              React.createElement(Tooltip, null),
-              React.createElement(Legend, null),
-              series.map((s, i) =>
-                React.createElement(Line, {
-                  key: i,
-                  type: "monotone",
-                  dataKey: "value",
-                  data: filterData(s.data, timeframe),
-                  name: s.name,
-                  stroke: s.color || "#8884d8",
-                  dot: false
-                })
-              )
-            )
-          )
-        )
-      );
+    function toDataset(label, color, labels, series){
+      // map date -> value
+      const map = new Map(series.map(p => [p.date, p.value]));
+      return {
+        label,
+        data: labels.map(d => (map.has(d) ? map.get(d) : null)),
+        borderWidth: 1.8,
+        pointRadius: 0,
+        tension: 0.2
+      };
     }
 
-    function App() {
-      const [data, setData] = useState({});
-      const [timeframe, setTimeframe] = useState("year");
+    const charts = {}; // canvasId -> Chart instance
 
-      useEffect(() => {
-        async function loadData() {
-          const results = {};
-          results.gdp = await fetchFRED("GDP");
-          results.cpi = await fetchFRED("CPIAUCSL");
-          results.corecpi = await fetchFRED("CPILFESL");
-          results.pce = await fetchFRED("PCEPI");
-          results.unemployment = await fetchFRED("UNRATE");
-          results.m2 = await fetchFRED("M2SL");
-          results.fedfunds = await fetchFRED("FEDFUNDS");
-          results.yieldcurve = await fetchFRED("T10Y2Y");
-          results.consumerSentiment = await fetchFRED("UMCSENT");
-          results.pmi = await fetchFRED("NAPM");
+    async function drawGroup(canvasId, seriesList, freqCode){
+      try{
+        // fetch all series in parallel
+        const dataList = await Promise.all(seriesList.map(s => fetchFRED(s.id, freqCode).catch(e=>{
+          logStatus(`${s.id}: ${e.message}`, true);
+          return [];
+        })));
 
-          results.sp500 = await fetchYahoo(YAHOO_SYMBOLS.sp500);
-          results.vnindex = await fetchYahoo(YAHOO_SYMBOLS.vnindex);
-          results.gold = await fetchYahoo(YAHOO_SYMBOLS.gold);
-          results.oil = await fetchYahoo(YAHOO_SYMBOLS.oil);
-          results.dxy = await fetchYahoo(YAHOO_SYMBOLS.dxy);
-          results.bitcoin = await fetchYahoo(YAHOO_SYMBOLS.bitcoin);
+        const labels = mergeLabels(dataList);
+        const palette = [
+          "#2563eb","#dc2626","#059669","#7c3aed","#f59e0b",
+          "#0ea5e9","#ef4444","#16a34a","#a855f7","#d97706"
+        ];
+        const datasets = dataList.map((ser, i) => toDataset(seriesList[i].label, palette[i%palette.length], labels, ser));
+        datasets.forEach((d,i)=> d.borderColor = palette[i%palette.length]);
 
-          setData(results);
-        }
-        loadData();
-      }, []);
-
-      return (
-        React.createElement("div", { className: "p-6 grid grid-cols-1 md:grid-cols-2 gap-4" },
-          React.createElement("div", { className: "col-span-full flex items-center gap-4 mb-6" },
-            React.createElement("label", { className: "font-semibold" }, "Timeframe:"),
-            React.createElement("select", {
-              value: timeframe,
-              onChange: e => setTimeframe(e.target.value),
-              className: "border px-2 py-1 rounded"
+        const ctx = document.getElementById(canvasId).getContext("2d");
+        if (charts[canvasId]) charts[canvasId].destroy();
+        charts[canvasId] = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { position: 'top' },
+              tooltip: { callbacks:{
+                title: (items)=> items[0]?.label ?? '',
+              }},
             },
-              React.createElement("option", { value: "year" }, "Year"),
-              React.createElement("option", { value: "quarter" }, "Quarter"),
-              React.createElement("option", { value: "month" }, "Month"),
-              React.createElement("option", { value: "week" }, "Week")
-            )
-          ),
-
-          ChartCard({ title: "Lạm phát (CPI / Core CPI / PCE)", timeframe,
-            series: [
-              { name: "CPI", data: data.cpi || [], color: "#FF0000" },
-              { name: "Core CPI", data: data.corecpi || [], color: "#00AA00" },
-              { name: "PCE", data: data.pce || [], color: "#0000FF" },
-            ]
-          }),
-          ChartCard({ title: "Kinh tế (GDP, PMI, Consumer Sentiment)", timeframe,
-            series: [
-              { name: "GDP", data: data.gdp || [], color: "#0088FE" },
-              { name: "PMI", data: data.pmi || [], color: "#FFBB28" },
-              { name: "Sentiment", data: data.consumerSentiment || [], color: "#FF8042" },
-            ]
-          }),
-          ChartCard({ title: "Thị trường chứng khoán", timeframe,
-            series: [
-              { name: "S&P500", data: data.sp500 || [], color: "#0055FF" },
-              { name: "VNIndex", data: data.vnindex || [], color: "#FF5500" },
-            ]
-          }),
-          ChartCard({ title: "Hàng hóa & Tiền tệ", timeframe,
-            series: [
-              { name: "Gold", data: data.gold || [], color: "#FFD700" },
-              { name: "Oil", data: data.oil || [], color: "#222222" },
-              { name: "DXY", data: data.dxy || [], color: "#00CED1" },
-            ]
-          }),
-          ChartCard({ title: "Crypto", timeframe,
-            series: [
-              { name: "Bitcoin", data: data.bitcoin || [], color: "#F7931A" },
-            ]
-          }),
-          ChartCard({ title: "Chính sách tiền tệ", timeframe,
-            series: [
-              { name: "Fed Funds Rate", data: data.fedfunds || [], color: "#006400" },
-              { name: "Yield Curve (10Y-2Y)", data: data.yieldcurve || [], color: "#800080" },
-              { name: "M2 Supply", data: data.m2 || [], color: "#FF4500" },
-            ]
-          })
-        )
-      );
+            scales: {
+              x: { grid: { display:false } },
+              y: { grid: { color: 'rgba(0,0,0,0.06)' }, ticks:{ maxTicksLimit: 6 } }
+            }
+          }
+        });
+      }catch(err){
+        logStatus(`Draw ${canvasId}: ${err.message}`, true);
+      }
     }
 
-    ReactDOM.render(React.createElement(App), document.getElementById("root"));
+    async function loadAll(){
+      statusBox.textContent = ""; // clear
+      statusBox.classList.add('hidden');
+      const freq = document.getElementById('timeframe').value; // a/q/m/w
+
+      // Vẽ từng nhóm
+      await drawGroup("inflationChart",  SERIES.inflation,  freq);
+      await drawGroup("policyChart",     SERIES.policy,     freq);
+      await drawGroup("moneyChart",      SERIES.money,      freq);
+      await drawGroup("growthChart",     SERIES.growth,     freq);
+      await drawGroup("sentimentChart",  SERIES.sentiment,  freq);
+      await drawGroup("equityChart",     SERIES.equity,     freq);
+      await drawGroup("commoditiesChart",SERIES.commodities,freq);
+      await drawGroup("btcChart",        SERIES.btc,        freq);
+      logStatus("Done ✔");
+      setTimeout(()=>statusBox.classList.add('hidden'), 2000);
+    }
+
+    // events
+    document.getElementById('timeframe').addEventListener('change', loadAll);
+
+    // kick off
+    window.addEventListener('load', loadAll);
   </script>
 </body>
 </html>
