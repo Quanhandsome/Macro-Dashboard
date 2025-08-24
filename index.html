@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Macro Dashboard (FRED + CORS proxy)</title>
+  <title>Macro Dashboard (fresh data + proper timeframe)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root{--bg:#f7f7fb;--card:#fff;--text:#111;--muted:#666;}
@@ -39,51 +39,59 @@
   <div id="status" class="hidden"></div>
 
   <main>
+    <!-- Inflation -->
     <section class="card">
       <h3 class="title">Prices & Inflation</h3>
-      <p class="subtitle">CPI, Core CPI, PCE, Core PCE</p>
+      <p class="subtitle">CPI (headline), Core CPI, PCE, Core PCE</p>
       <canvas id="inflationChart"></canvas>
     </section>
 
+    <!-- Policy -->
     <section class="card">
       <h3 class="title">Policy & Yield Curve</h3>
       <p class="subtitle">Fed Funds Rate, 10Y–2Y Spread</p>
       <canvas id="policyChart"></canvas>
     </section>
 
+    <!-- Money & Balance Sheet -->
     <section class="card">
       <h3 class="title">Money & Balance Sheet</h3>
-      <p class="subtitle">M2, Fed Balance Sheet (WALCL)</p>
+      <p class="subtitle">M2 (level), Fed Balance Sheet (WALCL)</p>
       <canvas id="moneyChart"></canvas>
     </section>
 
+    <!-- Growth -->
     <section class="card">
       <h3 class="title">Growth & Activity</h3>
       <p class="subtitle">GDP, Industrial Production, Retail Sales</p>
       <canvas id="growthChart"></canvas>
     </section>
 
+    <!-- Sentiment -->
     <section class="card">
       <h3 class="title">Surveys & Sentiment</h3>
-      <p class="subtitle">PMI (ISM), UMich Sentiment</p>
+      <p class="subtitle">PMI, UMich Consumer Sentiment</p>
       <canvas id="sentimentChart"></canvas>
     </section>
 
+    <!-- Equities -->
     <section class="card">
       <h3 class="title">Equities</h3>
-      <p class="subtitle">S&P 500 (FRED)</p>
+      <p class="subtitle">S&P 500 (FRED daily)</p>
       <canvas id="equityChart"></canvas>
     </section>
 
+    <!-- Commodities & FX -->
     <section class="card">
       <h3 class="title">Commodities & USD</h3>
-      <p class="subtitle">Gold, WTI Oil, Broad USD</p>
+      <p class="subtitle">Gold (PM Fix USD), WTI Oil, Broad USD Index</p>
       <canvas id="commoditiesChart"></canvas>
     </section>
 
+    <!-- Crypto -->
     <section class="card">
       <h3 class="title">Crypto</h3>
-      <p class="subtitle">Bitcoin (Coinbase USD on FRED)</p>
+      <p class="subtitle">Bitcoin (Coinbase USD)</p>
       <canvas id="btcChart"></canvas>
     </section>
   </main>
@@ -91,12 +99,11 @@
   <script>
     // ====== CONFIG ======
     const FRED_KEY = "2a302371de3d9e50c4820b561604a060"; // key của bro
-    const START = "2005-01-01";
-
+    const TODAY = new Date(); // dùng local time
     // CORS proxies (thứ tự ưu tiên)
     const PROXIES = [
       (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-      (url) => `https://r.jina.ai/https://${url.replace(/^https?:\/\//,'')}`
+      (url) => `https://r.jina.ai/https/${url.replace(/^https?:\/\//,'')}`
     ];
 
     const SERIES = {
@@ -115,27 +122,28 @@
         { id: "WALCL", label: "Fed Balance Sheet" },
       ],
       growth: [
-        { id: "GDP",    label: "GDP (SAAR, Bil.$)" }, // quarterly
-        { id: "INDPRO", label: "Industrial Production" }, // monthly
-        { id: "RSAFS",  label: "Retail Sales (Advance)" }, // monthly
+        { id: "GDP",    label: "GDP (SAAR, Bil.$)" },    // quarterly
+        { id: "INDPRO", label: "Industrial Production" },// monthly
+        { id: "RSAFS",  label: "Retail Sales (Advance)"} // monthly $
       ],
       sentiment: [
-        { id: "NAPM",    label: "ISM PMI" },
-        { id: "UMCSENT", label: "UMich Sentiment" },
+        { id: "NAPM",    label: "ISM PMI" },             // monthly
+        { id: "UMCSENT", label: "UMich Sentiment" },     // monthly
       ],
       equity: [
-        { id: "SP500", label: "S&P 500" },
+        { id: "SP500", label: "S&P 500" },               // daily
       ],
       commodities: [
-        { id: "GOLDPMGBD228NLBM", label: "Gold (PM Fix USD/oz)" },
-        { id: "DCOILWTICO",       label: "WTI Crude (USD/bbl)" },
-        { id: "DTWEXBGS",         label: "Broad USD Index" },
+        { id: "GOLDPMGBD228NLBM", label: "Gold (PM Fix USD/oz)" }, // daily
+        { id: "DCOILWTICO",       label: "WTI Crude (USD/bbl)" },  // daily
+        { id: "DTWEXBGS",         label: "Broad USD Index" },      // daily/monthly
       ],
       btc: [
-        { id: "CBBTCUSD", label: "Bitcoin (USD)" },
+        { id: "CBBTCUSD", label: "Bitcoin (USD)" },      // daily
       ],
     };
 
+    // ====== HELPERS ======
     const $ = (sel) => document.querySelector(sel);
     const statusBox = $('#status');
     function logStatus(msg, isError=false){
@@ -143,24 +151,113 @@
       statusBox.textContent = (statusBox.textContent ? statusBox.textContent + "\n" : "") + (isError ? "⚠️ " : "ℹ️ ") + msg;
     }
 
-    // Fetch JSON with CORS fallbacks
+    function isoDate(d){ return d.toISOString().split("T")[0]; }
+    function addYears(d, n){ const x=new Date(d); x.setFullYear(x.getFullYear()+n); return x; }
+
+    // start date đề xuất theo timeframe (để fetch nhanh & đủ dài)
+    function getStartByFreq(freq){
+      const end = TODAY;
+      if (freq === "w") return isoDate(addYears(end, -5));   // 5 năm tuần
+      if (freq === "m") return isoDate(addYears(end, -12));  // 12 năm tháng
+      if (freq === "q") return isoDate(addYears(end, -24));  // 24 năm quý
+      if (freq === "a") return isoDate(addYears(end, -40));  // 40 năm năm
+      return "2000-01-01";
+    }
+
+    // bucket label theo timeframe
+    function toBucket(dateStr, freq){
+      const [y,m,day] = dateStr.split("-").map(x=>parseInt(x,10));
+      if (freq === "a") return String(y);
+      if (freq === "q") {
+        const q = Math.floor((m-1)/3)+1;
+        return `${y}-Q${q}`;
+      }
+      if (freq === "m") {
+        return `${y}-${String(m).padStart(2,"0")}`;
+      }
+      if (freq === "w") {
+        // ISO week number (đơn giản hoá): tuần của năm, pad 2 số
+        const dt = new Date(dateStr);
+        const tmp = new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
+        // Thuật toán ISO week:
+        const dayNum = (tmp.getUTCDay() + 6) % 7;
+        tmp.setUTCDate(tmp.getUTCDate() - dayNum + 3);
+        const firstThursday = new Date(Date.UTC(tmp.getUTCFullYear(),0,4));
+        const week = 1 + Math.round(((tmp - firstThursday)/86400000 - 3) / 7);
+        return `${y}-W${String(week).padStart(2,"0")}`;
+      }
+      return dateStr;
+    }
+
+    // sắp xếp bucket theo thời gian
+    function sortBuckets(buckets){
+      return buckets.sort((a,b)=>{
+        const [ay,aq] = a.split("-");
+        const [by,bq] = b.split("-");
+        // year only
+        if (!aq && !bq) return parseInt(a)-parseInt(b);
+        // quarter
+        if (a.includes("Q") || b.includes("Q")){
+          const [ya,qa]=a.split("-Q").map(x=>parseInt(x,10));
+          const [yb,qb]=b.split("-Q").map(x=>parseInt(x,10));
+          return ya===yb ? qa-qb : ya-yb;
+        }
+        // month
+        if (a.includes("-") && b.includes("-") && !a.includes("W") && !b.includes("W")){
+          const [ya,ma]=a.split("-").map(x=>parseInt(x,10));
+          const [yb,mb]=b.split("-").map(x=>parseInt(x,10));
+          return ya===yb ? ma-mb : ya-yb;
+        }
+        // week (YYYY-Wxx)
+        if (a.includes("W") || b.includes("W")){
+          const [ya,wa]=a.split("-W"); const [yb,wb]=b.split("-W");
+          const yai=parseInt(ya,10), ybi=parseInt(yb,10);
+          const wai=parseInt(wa,10), wbi=parseInt(wb,10);
+          return yai===ybi ? wai-wbi : yai-ybi;
+        }
+        return a.localeCompare(b);
+      });
+    }
+
+    // gom labels theo bucket từ nhiều series
+    function mergeBucketsByFreq(listOfSeries, freq){
+      const set = new Set();
+      listOfSeries.forEach(series=>{
+        series.forEach(p => set.add(toBucket(p.date, freq)));
+      });
+      return sortBuckets(Array.from(set));
+    }
+
+    // map series -> bucket -> value (lấy điểm cuối kỳ)
+    function mapSeriesToBucket(series, freq){
+      const map = new Map();
+      series.forEach(p => {
+        const k = toBucket(p.date, freq);
+        map.set(k, p.value);
+      });
+      return map;
+    }
+
+    // ---- fetch JSON qua proxy, có cache-buster để luôn fresh ----
     async function fetchJSONWithProxy(url) {
-      // thử trực tiếp (nếu server cho CORS)
+      // chèn cache-buster để tránh proxy cache
+      const u = new URL(url);
+      u.searchParams.set("_v", String(Date.now()));
+      const urlWithV = u.toString();
+
+      // thử direct trước
       try {
-        const res = await fetch(url, { credentials: "omit" });
+        const res = await fetch(urlWithV, { credentials: "omit" });
         if (res.ok) return await res.json();
         throw new Error(`HTTP ${res.status}`);
       } catch (e1) {
-        // thử proxy 1
         try {
-          const res2 = await fetch(PROXIES[0](url), { credentials: "omit" });
+          const res2 = await fetch(PROXIES[0](urlWithV), { credentials: "omit" });
           if (res2.ok) return await res2.json();
           throw new Error(`Proxy1 HTTP ${res2.status}`);
         } catch (e2) {
-          // thử proxy 2
-          const res3 = await fetch(PROXIES[1](url), { credentials: "omit" });
+          const res3 = await fetch(PROXIES[1](urlWithV), { credentials: "omit" });
           if (res3.ok) {
-            // Jina proxy trả về text -> parse JSON
             const txt = await res3.text();
             try { return JSON.parse(txt); }
             catch { throw new Error("Proxy2 parse error"); }
@@ -170,15 +267,17 @@
       }
     }
 
-    // FRED fetch (có freq + aggregation end-of-period để “Year/Quarter/Month/Week” đẹp)
+    // ---- FRED fetch theo timeframe, có start/end động + aggregation eop ----
     async function fetchFRED(seriesId, freqCode){
+      const start = getStartByFreq(freqCode);
+      const end = isoDate(TODAY);
       const u = new URL("https://api.stlouisfed.org/fred/series/observations");
       u.searchParams.set("series_id", seriesId);
       u.searchParams.set("api_key", FRED_KEY);
       u.searchParams.set("file_type", "json");
-      if (START) u.searchParams.set("observation_start", START);
+      u.searchParams.set("observation_start", start);
+      u.searchParams.set("observation_end", end);
       if (freqCode) u.searchParams.set("frequency", freqCode); // a/q/m/w
-      // dùng eop để lấy điểm cuối kỳ cho đường đẹp (đỡ “trung bình”)
       if (freqCode && freqCode !== "d") u.searchParams.set("aggregation_method", "eop");
 
       try{
@@ -193,17 +292,11 @@
       }
     }
 
-    function mergeLabels(arrOfSeries){
-      const set = new Set();
-      arrOfSeries.forEach(s => s.forEach(p => set.add(p.date)));
-      return Array.from(set).sort();
-    }
-
-    function toDataset(label, color, labels, series){
-      const map = new Map(series.map(p => [p.date, p.value]));
+    const charts = {}; // canvasId -> Chart instance
+    function toDataset(label, color, labels, mapBucketToVal){
       return {
         label,
-        data: labels.map(d => (map.has(d) ? map.get(d) : null)),
+        data: labels.map(lb => mapBucketToVal.has(lb) ? mapBucketToVal.get(lb) : null),
         borderWidth: 1.8,
         pointRadius: 0,
         tension: 0.2,
@@ -211,30 +304,51 @@
       };
     }
 
-    const charts = {};
-
     async function drawGroup(canvasId, seriesList, freqCode){
+      // fetch tất cả series theo freq
       const dataList = await Promise.all(seriesList.map(s => fetchFRED(s.id, freqCode)));
-      const labels = mergeLabels(dataList);
+      // tạo bucket labels theo timeframe
+      const buckets = mergeBucketsByFreq(dataList, freqCode);
       const palette = [
         "#2563eb","#dc2626","#059669","#7c3aed","#f59e0b",
         "#0ea5e9","#ef4444","#16a34a","#a855f7","#d97706"
       ];
-      const datasets = dataList.map((ser, i) =>
-        toDataset(seriesList[i].label, palette[i%palette.length], labels, ser)
-      );
+      const datasets = dataList.map((ser, i) => {
+        const mapB = mapSeriesToBucket(ser, freqCode);
+        return toDataset(seriesList[i].label, palette[i%palette.length], buckets, mapB);
+      });
 
       const ctx = document.getElementById(canvasId).getContext("2d");
       if (charts[canvasId]) charts[canvasId].destroy();
       charts[canvasId] = new Chart(ctx, {
         type: 'line',
-        data: { labels, datasets },
+        data: { labels: buckets, datasets },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          responsive: true,
+          maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
-          plugins: { legend: { position: 'top' } },
+          plugins: {
+            legend: { position: 'top' },
+            tooltip: { callbacks:{ title: (items)=> items[0]?.label ?? '' } },
+          },
           scales: {
-            x: { grid: { display:false } },
+            x: {
+              grid: { display:false },
+              ticks: {
+                maxTicksLimit: 10,
+                callback: (val, idx, ticks) => {
+                  const lb = buckets[val];
+                  if (!lb) return '';
+                  if (lb.includes("-Q")) return lb.replace("-", " ");  // "2025 Q2"
+                  if (lb.includes("-W")) return lb;                    // "2025-W34"
+                  if (lb.includes("-")) {                              // month "YYYY-MM" -> "MM/YY"
+                    const [y,m]=lb.split("-");
+                    return `${m}/${String(y).slice(-2)}`;
+                  }
+                  return lb; // year "YYYY"
+                }
+              }
+            },
             y: { grid: { color: 'rgba(0,0,0,0.06)' }, ticks:{ maxTicksLimit: 6 } }
           }
         }
@@ -244,6 +358,7 @@
     async function loadAll(){
       statusBox.textContent = ""; statusBox.classList.add('hidden');
       const freq = document.getElementById('timeframe').value; // a/q/m/w
+
       await drawGroup("inflationChart",   SERIES.inflation,   freq);
       await drawGroup("policyChart",      SERIES.policy,      freq);
       await drawGroup("moneyChart",       SERIES.money,       freq);
@@ -252,6 +367,7 @@
       await drawGroup("equityChart",      SERIES.equity,      freq);
       await drawGroup("commoditiesChart", SERIES.commodities, freq);
       await drawGroup("btcChart",         SERIES.btc,         freq);
+
       logStatus("Done ✔");
       setTimeout(()=>statusBox.classList.add('hidden'), 2500);
     }
