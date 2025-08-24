@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Macro Dashboard — Static (FRED)</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background:#0b1320; color: #e6eefc;}
+    header { padding: 20px; border-bottom: 1px solid #223; }
+    h1 { margin: 0 0 8px 0; font-size: 22px;}
+    .container { padding: 16px; max-width: 1200px; margin: auto; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; align-items: end;}
+    label { font-size: 13px; color:#a9b7d0; display:block; margin-bottom:6px;}
+    select, input[type="number"], input[type="checkbox"] { width: 100%; padding: 8px; border-radius:8px; border:1px solid #2a3550; background:#11182a; color:#e6eefc;}
+    .row { display:flex; gap:12px; align-items:center;}
+    .pill { background:#13203a; border:1px solid #224; padding:6px 10px; border-radius:999px; font-size:12px; color:#bcd;}
+    button { padding:10px 14px; border-radius:10px; background:#2a62ff; border:none; color:white; cursor:pointer; }
+    button:disabled { background:#2a62ff66; cursor:not-allowed;}
+    #chart { width:100%; height: 600px; background:#0b1320; border:1px solid #1b243b; border-radius:12px; }
+    footer { color:#9fb1ca; font-size:12px; padding: 16px; border-top:1px solid #223; }
+    a { color:#7fb3ff; }
+    .tag { display:inline-block; margin-right:8px; }
+    .note { font-size:12px; color:#9fb1ca; }
+  </style>
+</head>
+<body>
+  <header class="container">
+    <h1>📊 Macro Dashboard — Static (FRED)</h1>
+    <div class="note">Không cần backend. Dữ liệu tải trực tiếp từ FRED CSV. Chọn chỉ số ở dưới rồi bấm <b>Vẽ biểu đồ</b>.</div>
+  </header>
+
+  <div class="container">
+    <div class="controls">
+      <div>
+        <label>Chỉ số (có thể chọn nhiều)</label>
+        <select id="indicatorSelect" multiple size="8">
+          <option value="FEDFUNDS">Fed Funds Rate (FEDFUNDS)</option>
+          <option value="M2SL">M2 Money Stock (M2SL)</option>
+          <option value="CPIAUCSL">US CPI (CPIAUCSL)</option>
+          <option value="UNRATE">Unemployment Rate (UNRATE)</option>
+          <option value="NAPM">ISM Manufacturing PMI (NAPM)</option>
+          <option value="T10Y2Y">10Y–2Y Yield Spread (T10Y2Y)</option>
+          <option value="DTWEXBGS">US Dollar Index (Broad) (DTWEXBGS)</option>
+          <option value="PCEPILFE">Core PCE (PCEPILFE)</option>
+          <option value="RSAFS">Retail Sales (RSAFS)</option>
+          <option value="SP500">S&P 500 (SP500)</option>
+        </select>
+      </div>
+      <div>
+        <label>Năm bắt đầu</label>
+        <input id="startYear" type="number" min="1900" max="2100" value="1990"/>
+      </div>
+      <div>
+        <label><input id="yoy" type="checkbox"/> Hiển thị % thay đổi (YoY)</label>
+        <label><input id="normalize" type="checkbox"/> Chuẩn hóa = 100 tại điểm bắt đầu (tắt nếu đã YoY)</label>
+      </div>
+      <div>
+        <button id="plotBtn">Vẽ biểu đồ</button>
+        <div class="pill tag">Nguồn: FRED CSV</div>
+      </div>
+    </div>
+
+    <div id="chart"></div>
+    <div id="table"></div>
+    <p class="note">Mẹo: Giữ Ctrl/Cmd để chọn nhiều chỉ số. Dùng công cụ zoom của biểu đồ để phóng to đoạn quan tâm.</p>
+  </div>
+
+  <footer class="container">
+    Made for Hoàng Quân. Có thể host free trên GitHub Pages/Netlify chỉ với file <code>index.html</code> này.
+  </footer>
+
+<script>
+const nameMap = {
+  "FEDFUNDS":"Fed Funds Rate",
+  "M2SL":"M2 Money Stock",
+  "CPIAUCSL":"US CPI",
+  "UNRATE":"Unemployment Rate",
+  "NAPM":"ISM Manufacturing PMI",
+  "T10Y2Y":"10Y–2Y Yield Spread",
+  "DTWEXBGS":"USD Index (Broad)",
+  "PCEPILFE":"Core PCE",
+  "RSAFS":"Retail Sales",
+  "SP500":"S&P 500"
+};
+
+async function fetchFredCSV(seriesId){
+  const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`;
+  const res = await fetch(url);
+  if(!res.ok){ throw new Error(`Fetch failed ${seriesId}`); }
+  const text = await res.text();
+  // parse CSV
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines[0].split(",");
+  const dateIdx = header.findIndex(h => h.toLowerCase() === "date");
+  const valueIdx = header.findIndex(h => h.toUpperCase() === seriesId);
+  const data = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = lines[i].split(",");
+    const d = new Date(cols[dateIdx]);
+    let v = parseFloat(cols[valueIdx]);
+    if(isNaN(v)) continue;
+    data.push({date: d, value: v});
+  }
+  return data;
+}
+
+function filterStartYear(data, y){
+  return data.filter(p => p.date.getFullYear() >= y);
+}
+
+function yoyPercent(series){
+  const map = new Map(series.map(p => [p.date.toISOString().slice(0,10), p.value]));
+  const out = [];
+  for(const p of series){
+    const d = new Date(p.date);
+    d.setFullYear(d.getFullYear() - 1);
+    const key = d.toISOString().slice(0,10);
+    const prev = map.get(key);
+    if(prev !== undefined && prev !== 0){
+      out.push({date: p.date, value: (p.value/prev - 1)*100.0});
+    }
+  }
+  return out;
+}
+
+function normalize100(series){
+  if(series.length === 0) return series;
+  const base = series[0].value;
+  if(!base) return series;
+  return series.map(p => ({date: p.date, value: p.value/base*100.0}));
+}
+
+function toTrace(series, name){
+  return {
+    x: series.map(p => p.date),
+    y: series.map(p => p.value),
+    mode: 'lines',
+    name: name
+  };
+}
+
+async function render(){
+  const select = document.getElementById('indicatorSelect');
+  const startYear = parseInt(document.getElementById('startYear').value, 10) || 1990;
+  const yoy = document.getElementById('yoy').checked;
+  const norm = document.getElementById('normalize').checked && !yoy;
+
+  const chosen = Array.from(select.selectedOptions).map(o => o.value);
+  if(chosen.length === 0){
+    alert("Chọn ít nhất 1 chỉ số.");
+    return;
+  }
+
+  document.getElementById('plotBtn').disabled = true;
+  try{
+    const traces = [];
+    for(const sid of chosen){
+      const raw = await fetchFredCSV(sid);
+      let dat = filterStartYear(raw, startYear);
+      if(yoy){ dat = yoyPercent(dat); }
+      if(norm){ dat = normalize100(dat); }
+      traces.push(toTrace(dat, nameMap[sid] || sid));
+    }
+
+    const layout = {
+      paper_bgcolor:'#0b1320',
+      plot_bgcolor:'#0b1320',
+      font:{color:'#e6eefc'},
+      legend:{orientation:'h'},
+      margin:{l:60,r:20,t:40,b:40},
+      yaxis:{title: yoy ? '% YoY' : (norm ? 'Index (base=100)' : 'Level')}
+    };
+    Plotly.newPlot('chart', traces, layout, {displaylogo:false, responsive:true});
+  } catch(err){
+    alert("Lỗi tải dữ liệu: " + err.message);
+  } finally {
+    document.getElementById('plotBtn').disabled = false;
+  }
+}
+
+document.getElementById('plotBtn').addEventListener('click', render);
+
+// Preselect a few defaults and auto-render
+(function init(){
+  const sel = document.getElementById('indicatorSelect');
+  const defaults = ["FEDFUNDS","M2SL","CPIAUCSL","UNRATE","NAPM","T10Y2Y","DTWEXBGS"];
+  for(const opt of sel.options){ if(defaults.includes(opt.value)) opt.selected = true; }
+})();
+</script>
+</body>
+</html>
