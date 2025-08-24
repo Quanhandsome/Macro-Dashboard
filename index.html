@@ -2,31 +2,30 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8" />
-  <title>Macro Dashboard — robust FRED + fallback</title>
+  <title>Macro Dashboard — Accurate mode</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root{--bg:#f7f8fb;--card:#fff;--muted:#6b7280}
     *{box-sizing:border-box}
-    body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:#111}
+    body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:#111}
     header{position:sticky;top:0;background:var(--card);padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center;z-index:10}
     main{padding:18px;max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr;gap:16px}
     @media(min-width:900px){main{grid-template-columns:1fr 1fr}}
     .card{background:var(--card);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(16,24,40,0.04);min-height:360px}
     h1{font-size:18px;margin:0}
-    label.select{display:flex;align-items:center;gap:8px}
+    .subtitle{color:var(--muted);font-size:13px;margin:6px 0 12px}
     select{padding:6px 8px;border-radius:8px;border:1px solid #ddd;background:#fff}
     canvas{width:100% !important;height:300px !important}
     #status{position:fixed;right:12px;bottom:12px;max-width:520px;background:#111;color:#fff;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.4;white-space:pre-wrap;box-shadow:0 10px 30px rgba(0,0,0,0.25)}
     #status.hidden{display:none}
-    .subtitle{color:var(--muted);font-size:13px;margin:6px 0 12px}
   </style>
 </head>
 <body>
   <header>
-    <h1>Macro Dashboard (FRED) — robust fetch + fallback</h1>
+    <h1>Macro Dashboard — Accurate mode</h1>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
-      <label class="select">Timeframe:
+      <label>Timeframe:
         <select id="timeframe">
           <option value="m">Month</option>
           <option value="q">Quarter</option>
@@ -43,19 +42,19 @@
     <!-- 8 groups -->
     <section class="card">
       <h3>Prices & Inflation</h3>
-      <p class="subtitle">CPI, Core CPI, PCE, Core PCE</p>
+      <p class="subtitle">CPI (headline), Core CPI, PCE, Core PCE — plotted as YoY % (to avoid index confusion)</p>
       <canvas id="inflationChart"></canvas>
     </section>
 
     <section class="card">
       <h3>Policy & Yield Curve</h3>
-      <p class="subtitle">Fed Funds Rate, 10Y-2Y spread</p>
+      <p class="subtitle">Fed Funds Rate, 10Y–2Y spread</p>
       <canvas id="policyChart"></canvas>
     </section>
 
     <section class="card">
       <h3>Money & Balance Sheet</h3>
-      <p class="subtitle">M2, Fed Total Assets (WALCL)</p>
+      <p class="subtitle">M2 (level) & Fed Balance Sheet</p>
       <canvas id="moneyChart"></canvas>
     </section>
 
@@ -73,7 +72,7 @@
 
     <section class="card">
       <h3>Equities</h3>
-      <p class="subtitle">S&P 500 (FRED)</p>
+      <p class="subtitle">S&P 500</p>
       <canvas id="equityChart"></canvas>
     </section>
 
@@ -85,354 +84,384 @@
 
     <section class="card">
       <h3>Crypto</h3>
-      <p class="subtitle">Bitcoin (USD)</p>
+      <p class="subtitle">Bitcoin — fetched from CoinGecko (preferred). If unavailable, chart shows no data (no fake numbers).</p>
       <canvas id="btcChart"></canvas>
     </section>
   </main>
 
-  <script>
-  /**************** CONFIG ****************/
-  const FRED_KEY = "2a302371de3d9e50c4820b561604a060"; // key bro cung cấp (nhắc: không để công khai lâu dài)
-  const MAX_POINTS = 24; // chỉ lấy 24 points gần nhất theo timeframe
-  const TODAY = new Date();
-  const STATUS = document.getElementById('status');
+<script>
+/* ===== CONFIG ===== */
+const FRED_KEY = "2a302371de3d9e50c4820b561604a060"; // bro đã cung cấp
+const MAX_POINTS = 24;
+const TODAY = new Date();
+const STATUS = document.getElementById('status');
 
-  // Các series nhóm (giữ giống bạn yêu cầu)
-  const SERIES = {
-    inflation: [
-      { id: "CPIAUCSL", label: "CPI (All Items)" },
-      { id: "CPILFESL", label: "Core CPI" },
-      { id: "PCEPI", label: "PCE Price Index" },
-      { id: "PCEPILFE", label: "Core PCE" }
-    ],
-    policy: [
-      { id: "FEDFUNDS", label: "Fed Funds Rate (%)" },
-      { id: "T10Y2Y",   label: "10Y–2Y Spread (%)" }
-    ],
-    money: [
-      { id: "M2SL",  label: "M2 (Level)" },
-      { id: "WALCL", label: "Fed Assets (WALCL)" }
-    ],
-    growth: [
-      { id: "GDP",    label: "GDP (SAAR, Bil.$)" },
-      { id: "INDPRO", label: "Industrial Production" },
-      { id: "RSAFS",  label: "Retail Sales (Advance)" }
-    ],
-    sentiment: [
-      { id: "NAPM",    label: "ISM PMI" },
-      { id: "UMCSENT", label: "UMich Sentiment" }
-    ],
-    equity: [
-      { id: "SP500", label: "S&P 500" }
-    ],
-    commodities: [
-      { id: "GOLDPMGBD228NLBM", label: "Gold (PM Fix USD/oz)" },
-      { id: "DCOILWTICO",       label: "WTI Crude (USD/bbl)" },
-      { id: "DTWEXBGS",         label: "Broad USD Index" }
-    ],
-    btc: [
-      { id: "CBBTCUSD", label: "Bitcoin (USD)" }
-    ]
-  };
+/* ===== Series definitions (transform = 'yoy' => convert to YoY%) ===== */
+const SERIES = {
+  inflation: [
+    {id:"CPIAUCSL", label:"CPI (All Items)", transform:'yoy', unit:'percent'},
+    {id:"CPILFESL", label:"Core CPI", transform:'yoy', unit:'percent'},
+    {id:"PCEPI",    label:"PCE Price Index", transform:'yoy', unit:'percent'},
+    {id:"PCEPILFE", label:"Core PCE", transform:'yoy', unit:'percent'}
+  ],
+  policy: [
+    {id:"FEDFUNDS", label:"Fed Funds Rate (%)", transform:'level', unit:'percent'},
+    {id:"T10Y2Y",   label:"10Y-2Y Spread (%)", transform:'level', unit:'percent'}
+  ],
+  money: [
+    {id:"M2SL", label:"M2 (Level)", transform:'level', unit:'number'},
+    {id:"WALCL", label:"Fed Assets (WALCL)", transform:'level', unit:'number'}
+  ],
+  growth: [
+    {id:"GDP", label:"GDP (SAAR)", transform:'level', unit:'number'},
+    {id:"INDPRO", label:"Industrial Production", transform:'level', unit:'index'},
+    {id:"RSAFS", label:"Retail Sales (Advance)", transform:'level', unit:'number'}
+  ],
+  sentiment: [
+    {id:"NAPM", label:"ISM PMI", transform:'level', unit:'index'},
+    {id:"UMCSENT", label:"UMich Sentiment", transform:'level', unit:'index'}
+  ],
+  equity: [
+    {id:"SP500", label:"S&P 500", transform:'level', unit:'price'}
+  ],
+  commodities: [
+    {id:"GOLDPMGBD228NLBM", label:"Gold (PM Fix USD/oz)", transform:'level', unit:'price'},
+    {id:"DCOILWTICO", label:"WTI Crude (USD/bbl)", transform:'level', unit:'price'},
+    {id:"DTWEXBGS", label:"Broad USD Index", transform:'level', unit:'index'}
+  ],
+  btc: [
+    {id:"COINGECKO_BTC", label:"Bitcoin (USD)", transform:'price', unit:'price'}
+  ]
+};
 
-  /**************** CORS PROXY CHAIN ****************/
-  // Các hàm tạo URL proxy (thứ tự: direct -> allorigins -> jina -> corsproxy -> thingproxy)
-  const PROXIES = [
-    url => url,
-    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    url => `https://r.jina.ai/https/${url.replace(/^https?:\/\//,'')}`,
-    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    url => `https://thingproxy.freeboard.io/fetch/${url}`
-  ];
+/* ===== PROXIES (chain) ===== */
+const PROXIES = [
+  url => url,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://r.jina.ai/https/${url.replace(/^https?:\/\//,'')}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`
+];
 
-  /**************** HELPERS ****************/
-  function logStatus(msg, isError=false) {
-    STATUS.classList.remove('hidden');
-    STATUS.textContent = (STATUS.textContent ? STATUS.textContent + "\n" : "") + (isError ? "⚠️ " : "ℹ️ ") + msg;
+/* ===== Helpers: status, iso, date math ===== */
+function logStatus(msg, isError=false){
+  STATUS.classList.remove('hidden');
+  STATUS.textContent = (STATUS.textContent? STATUS.textContent + "\n":"") + (isError? "⚠️ ":"ℹ️ ") + msg;
+}
+function clearStatus(){ STATUS.textContent=''; STATUS.classList.add('hidden'); }
+function iso(d){ return d.toISOString().split('T')[0]; }
+function monthsAgo(n){ const x=new Date(); x.setMonth(x.getMonth()-n); return x; }
+function yearsAgo(n){ const x=new Date(); x.setFullYear(x.getFullYear()-n); return x; }
+function weeksAgo(n){ const x=new Date(); x.setDate(x.getDate()-7*n); return x; }
+
+/* ===== Bucket helpers (canonical strings used in charts) ===== */
+function toBucket(dateStr, freq){
+  const [y,m,day] = dateStr.split('-').map(x=>parseInt(x,10));
+  if (freq === 'a') return String(y);
+  if (freq === 'q'){ const q = Math.floor((m-1)/3)+1; return `${y}-Q${q}`; }
+  if (freq === 'm') return `${y}-${String(m).padStart(2,'0')}`;
+  if (freq === 'w'){
+    const dt = new Date(dateStr);
+    const tmp = new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
+    const dayNum = (tmp.getUTCDay() + 6) % 7;
+    tmp.setUTCDate(tmp.getUTCDate() - dayNum + 3);
+    const firstThursday = new Date(Date.UTC(tmp.getUTCFullYear(),0,4));
+    const weekNum = 1 + Math.round(((tmp - firstThursday)/86400000 - 3)/7);
+    return `${tmp.getUTCFullYear()}-W${String(weekNum).padStart(2,'0')}`;
   }
-  function clearStatus(){ STATUS.textContent = ""; STATUS.classList.add('hidden'); }
+  return dateStr;
+}
 
-  function iso(d){ return d.toISOString().split('T')[0]; }
-  function daysAgo(n){ const x=new Date(); x.setDate(x.getDate()-n); return x; }
-  function monthsAgo(n){ const x=new Date(); x.setMonth(x.getMonth()-n); return x; }
-  function yearsAgo(n){ const x=new Date(); x.setFullYear(x.getFullYear()-n); return x; }
-  function weeksAgo(n){ const x=new Date(); x.setDate(x.getDate()-7*n); return x; }
-
-  // Tính ngày bắt đầu cần fetch dựa trên timeframe & MAX_POINTS
-  function getStartByFreq(freq){
-    if (freq === 'm') return iso(monthsAgo(MAX_POINTS));       // 24 tháng
-    if (freq === 'q') return iso(monthsAgo(MAX_POINTS * 3));   // 24 quý => 72 tháng
-    if (freq === 'a') return iso(yearsAgo(MAX_POINTS));        // 24 năm
-    if (freq === 'w') return iso(weeksAgo(MAX_POINTS));        // 24 tuần
-    return iso(yearsAgo(10));
-  }
-
-  // Canonicalize bucket label
-  function toBucket(dateStr, freq){
-    const [y,m,day] = dateStr.split('-').map(n=>parseInt(n,10));
-    if (freq === 'a') return String(y);
-    if (freq === 'q') {
-      const q = Math.floor((m-1)/3)+1; return `${y}-Q${q}`;
+function sortBuckets(arr){
+  return arr.sort((A,B)=>{
+    if (!A.includes('-') && !B.includes('-')) return parseInt(A)-parseInt(B);
+    if (A.includes('-Q') || B.includes('-Q')){
+      const [ay,aq] = A.split('-Q'); const [by,bq] = B.split('-Q');
+      const ayN = parseInt(ay), byN = parseInt(by);
+      const aqN = parseInt(aq||0), bqN = parseInt(bq||0);
+      return ayN === byN ? aqN - bqN : ayN - byN;
     }
-    if (freq === 'm') return `${y}-${String(m).padStart(2,'0')}`;
-    if (freq === 'w') {
-      const dt = new Date(dateStr);
-      const tmp = new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
+    if (A.includes('-W') || B.includes('-W')){
+      const [ay,aw] = A.split('-W'); const [by,bw] = B.split('-W');
+      const ayN = parseInt(ay), byN = parseInt(by);
+      const awN = parseInt(aw||0), bwN = parseInt(bw||0);
+      return ayN === byN ? awN - bwN : ayN - byN;
+    }
+    if (A.includes('-') && B.includes('-')){
+      const [ay,am] = A.split('-').map(x=>parseInt(x));
+      const [by,bm] = B.split('-').map(x=>parseInt(x));
+      return ay === by ? am - bm : ay - by;
+    }
+    return A.localeCompare(B);
+  });
+}
+
+/* Produce the last MAX_POINTS canonical buckets for a freq (guarantee there are labels even if no series) */
+function generateBucketsForFreq(freq){
+  const buckets = [];
+  const now = new Date();
+  if (freq === 'm'){
+    for (let i=MAX_POINTS-1;i>=0;i--){
+      const d = monthsAgo(i);
+      buckets.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+    }
+  } else if (freq === 'q'){
+    // steps of 3 months
+    for (let i=MAX_POINTS-1;i>=0;i--){
+      const d = monthsAgo(i*3);
+      const q = Math.floor((d.getMonth())/3)+1;
+      buckets.push(`${d.getFullYear()}-Q${q}`);
+    }
+  } else if (freq === 'a'){
+    for (let i=MAX_POINTS-1;i>=0;i--){
+      const d = yearsAgo(i);
+      buckets.push(String(d.getFullYear()));
+    }
+  } else { // week
+    for (let i=MAX_POINTS-1;i>=0;i--){
+      const d = weeksAgo(i);
+      // compute ISO week
+      const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
       const dayNum = (tmp.getUTCDay() + 6) % 7;
       tmp.setUTCDate(tmp.getUTCDate() - dayNum + 3);
       const firstThursday = new Date(Date.UTC(tmp.getUTCFullYear(),0,4));
       const weekNum = 1 + Math.round(((tmp - firstThursday)/86400000 - 3)/7);
-      return `${tmp.getUTCFullYear()}-W${String(weekNum).padStart(2,'0')}`;
+      buckets.push(`${tmp.getUTCFullYear()}-W${String(weekNum).padStart(2,'0')}`);
     }
-    return dateStr;
   }
+  return buckets;
+}
 
-  function sortBuckets(arr){
-    // sort theo thời gian đúng với format used
-    return arr.sort((A,B) => {
-      if (!A.includes('-') && !B.includes('-')) return parseInt(A) - parseInt(B); // years
-      // Q format
-      if (A.includes('-Q') || B.includes('-Q')){
-        const [ay,aq] = A.split('-Q'); const [by,bq] = B.split('-Q');
-        const ayN = parseInt(ay), byN = parseInt(by);
-        const aqN = parseInt(aq||0), bqN = parseInt(bq||0);
-        return ayN === byN ? aqN - bqN : ayN - byN;
-      }
-      // week
-      if (A.includes('-W') || B.includes('-W')){
-        const [ay,aw] = A.split('-W'); const [by,bw] = B.split('-W');
-        const ayN = parseInt(ay), byN = parseInt(by);
-        const awN = parseInt(aw||0), bwN = parseInt(bw||0);
-        return ayN === byN ? awN - bwN : ayN - byN;
-      }
-      // month YYYY-MM
-      if (A.includes('-') && B.includes('-')){
-        const [ay,am] = A.split('-').map(x=>parseInt(x));
-        const [by,bm] = B.split('-').map(x=>parseInt(x));
-        return ay === by ? am - bm : ay - by;
-      }
-      return A.localeCompare(B);
-    });
-  }
-
-  // merge buckets from multiple series then slice last MAX_POINTS
-  function mergeBuckets(seriesList, freq){
-    const set = new Set();
-    seriesList.forEach(s => s.forEach(p => set.add(toBucket(p.date, freq))));
-    const arr = sortBuckets(Array.from(set));
-    if (arr.length > MAX_POINTS) return arr.slice(-MAX_POINTS);
-    return arr;
-  }
-
-  function mapToBucket(series, freq){
-    // map each bucket -> last value observed (overwrite so last date in bucket wins)
-    const map = new Map();
-    series.forEach(p => {
-      const k = toBucket(p.date, freq);
-      map.set(k, p.value);
-    });
-    return map;
-  }
-
-  /**************** FETCH with proxies ****************/
-  async function tryFetchWithProxies(origUrl){
-    let lastErr = null;
-    for (const mk of PROXIES){
-      const url = mk(origUrl);
-      try {
-        const res = await fetch(url, { credentials: 'omit' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        // try parse as json
-        const text = await res.text();
-        try {
-          return JSON.parse(text);
-        } catch(e){
-          // sometimes proxy returns already JSON object (res.json() would have worked), but text parse fails
-          try { return res.json(); } catch(e2){ throw new Error("parse error"); }
-        }
-      } catch(err){
-        lastErr = err;
-        // continue to next proxy
-      }
-    }
-    throw lastErr || new Error("All proxies failed");
-  }
-
-  async function fetchFRED(seriesId, freq){
-    const start = getStartByFreq(freq);
-    const end = iso(TODAY);
-    const u = new URL("https://api.stlouisfed.org/fred/series/observations");
-    u.searchParams.set("series_id", seriesId);
-    u.searchParams.set("api_key", FRED_KEY);
-    u.searchParams.set("file_type", "json");
-    u.searchParams.set("observation_start", start);
-    u.searchParams.set("observation_end", end);
-    if (freq) u.searchParams.set("frequency", freq); // a/q/m/w/d
-    if (freq && freq !== 'd') u.searchParams.set("aggregation_method","eop");
-    // cache buster handled by proxies via text fetch; also set param
-    u.searchParams.set("_v", String(Date.now()));
+/* ===== Fetch helpers with proxy chain (tries many proxies) ===== */
+async function tryFetchWithProxies(origUrl){
+  let lastErr = null;
+  for (const mk of PROXIES){
+    const url = mk(origUrl);
     try {
-      const json = await tryFetchWithProxies(u.toString());
-      if (!json || !json.observations) throw new Error("invalid payload");
-      return json.observations.map(o => ({ date: o.date, value: o.value === "." ? null : Number(o.value) }))
-                              .filter(p => Number.isFinite(p.value));
+      const res = await fetch(url, { credentials:'omit' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch(e){
+        try { return res.json(); } catch(e2){ throw new Error('parse error'); }
+      }
     } catch(err){
-      logStatus(`${seriesId}: ${err.message}`, true);
-      return null; // indicate failure -> fallback will be used
+      lastErr = err;
+      // continue
     }
   }
+  throw lastErr || new Error('All proxies failed');
+}
 
-  /**************** FALLBACK generator ****************/
-  // create plausible fallback series (deterministic-ish by id)
-  function fallbackSeries(seriesId, freq){
-    // choose base by id keywords
-    const id = seriesId.toUpperCase();
-    let base = 100;
-    if (id.includes("CPI")) base = 310;
-    if (id.includes("PCE")) base = 115;
-    if (id.includes("FED") && id.includes("FUNDS")) base = 5;
-    if (id.includes("M2")) base = 15000;
-    if (id.includes("GDP")) base = 24000;
-    if (id.includes("INDPRO")) base = 105;
-    if (id.includes("RSAFS")) base = 500;
-    if (id.includes("UMCSENT")) base = 70;
-    if (id.includes("NAPM")) base = 55;
-    if (id.includes("SP500")) base = 4500;
-    if (id.includes("GOLD")) base = 2100;
-    if (id.includes("DCOIL")) base = 80;
-    if (id.includes("DTWEX")) base = 100;
-    if (id.includes("CBBTC")) base = 40000;
+function getStartByFreq(freq){
+  if (freq === 'm') return iso(monthsAgo(MAX_POINTS*1)); // last MAX_POINTS months
+  if (freq === 'q') return iso(monthsAgo(MAX_POINTS*3)); // last MAX_POINTS quarters -> months
+  if (freq === 'a') return iso(yearsAgo(MAX_POINTS));
+  if (freq === 'w') return iso(weeksAgo(MAX_POINTS));
+  return iso(yearsAgo(10));
+}
 
-    // generate buckets for last MAX_POINTS
-    const buckets = [];
-    const freqType = freq || 'm';
-    const now = new Date();
-    for (let i = MAX_POINTS-1; i >=0; i--){
-      if (freqType === 'm'){
-        const dt = monthsAgo(i);
-        buckets.push(iso(new Date(dt.getFullYear(), dt.getMonth(), 1)));
-      } else if (freqType === 'q'){
-        const dt = monthsAgo(i*3);
-        const month = dt.getMonth()+1;
-        const qMonth = new Date(dt.getFullYear(), Math.floor((month-1)/3)*3, 1);
-        buckets.push(iso(qMonth));
-      } else if (freqType === 'a'){
-        const dt = yearsAgo(i);
-        buckets.push(`${dt.getFullYear()}-01-01`);
-      } else { // week
-        const dt = weeksAgo(i);
-        buckets.push(iso(dt));
+async function fetchFRED(seriesId, freq){
+  const start = getStartByFreq(freq);
+  const end = iso(TODAY);
+  const u = new URL('https://api.stlouisfed.org/fred/series/observations');
+  u.searchParams.set('series_id', seriesId);
+  u.searchParams.set('api_key', FRED_KEY);
+  u.searchParams.set('file_type', 'json');
+  u.searchParams.set('observation_start', start);
+  u.searchParams.set('observation_end', end);
+  if (freq) u.searchParams.set('frequency', freq); // a/q/m/w/d
+  if (freq && freq !== 'd') u.searchParams.set('aggregation_method','eop');
+  u.searchParams.set('_v', String(Date.now()));
+  try {
+    const json = await tryFetchWithProxies(u.toString());
+    if (!json || !json.observations) throw new Error('invalid payload');
+    return json.observations.map(o => ({date: o.date, value: o.value === '.' ? null : Number(o.value)}))
+                            .filter(x => Number.isFinite(x.value));
+  } catch(err){
+    logStatus(`${seriesId}: ${err.message}`, true);
+    return null; // null indicates fetch failure -> no synthetic numbers
+  }
+}
+
+/* ===== CoinGecko for BTC (preferred) ===== */
+async function fetchBTCCoingecko(freq){
+  // choose days param roughly
+  let days = MAX_POINTS * (freq==='m'?30 : freq==='q'?90 : freq==='a'?365 : 7);
+  if (days < 90) days = 90; // minimum friendly
+  const url = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=${days}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    // json.prices = [[timestamp, price], ...]
+    return json.prices.map(p => ({ date: new Date(p[0]).toISOString().split('T')[0], value: p[1] }));
+  } catch(err){
+    logStatus(`COINGECKO BTC: ${err.message}`, true);
+    return null;
+  }
+}
+
+/* ===== Transforms ===== */
+function computeYoY(series, lagCount){
+  // series assumed sorted ascending by date
+  const out = [];
+  for (let i=0;i<series.length;i++){
+    if (i - lagCount >= 0){
+      const cur = series[i].value;
+      const prev = series[i - lagCount].value;
+      if (prev && prev !== 0){
+        out.push({date: series[i].date, value: (cur/prev - 1) * 100});
+      } else {
+        out.push({date: series[i].date, value: null});
       }
+    } else {
+      out.push({date: series[i].date, value: null});
     }
+  }
+  return out;
+}
 
-    // deterministic pseudo-random from id
-    let seed = 0;
-    for (let i=0;i<id.length;i++) seed = (seed * 31 + id.charCodeAt(i)) % 10000;
-    const vals = buckets.map((b, idx) => {
-      seed = (seed * 9301 + 49297) % 233280;
-      const rnd = seed / 233280;
-      // create gentle trend + noise
-      const trend = (idx - MAX_POINTS/2) * (base * 0.001);
-      const val = Math.max( (base + trend) * (1 + (rnd - 0.45)*0.08), 0.0001);
-      return { date: b, value: Math.round(val * 100)/100 };
-    });
-    return vals;
+/* ===== Map series to bucket (bucket canonical strings) ===== */
+function mapSeriesToBucket(series, freq){
+  const map = new Map();
+  series.forEach(pt => {
+    const k = toBucket(pt.date, freq);
+    // always override so the last date in bucket wins (EOP)
+    map.set(k, pt.value);
+  });
+  return map;
+}
+
+/* ===== Chart rendering ===== */
+const chartRefs = {};
+function toDataset(label, color, buckets, map, styleOpts={}){
+  return {
+    label,
+    data: buckets.map(b => map.has(b) ? map.get(b) : null),
+    borderColor: color,
+    tension: 0.2,
+    pointRadius: 0,
+    spanGaps: true,
+    borderDash: styleOpts.borderDash || [],
+  };
+}
+
+async function drawGroup(canvasId, list, freq){
+  // special-case BTC -> use CoinGecko
+  const isBTCGroup = list.length === 1 && list[0].id === 'COINGECKO_BTC';
+  let fetchedList = [];
+
+  if (isBTCGroup){
+    const btcSeries = await fetchBTCCoingecko(freq);
+    if (btcSeries === null) {
+      // no data -> treat as null
+      fetchedList = [null];
+    } else {
+      fetchedList = [btcSeries];
+    }
+  } else {
+    // fetch FRED series in parallel
+    const promises = list.map(s => fetchFRED(s.id, freq));
+    const results = await Promise.all(promises);
+    fetchedList = results; // may contain nulls
   }
 
-  /**************** CHART RENDER ****************/
-  const chartRefs = {}; // id -> Chart instance
-
-  function toDataset(label, color, buckets, map){
-    return {
-      label,
-      data: buckets.map(b => map.has(b) ? map.get(b) : null),
-      borderColor: color,
-      tension: 0.2,
-      pointRadius: 0,
-      spanGaps: true
-    };
-  }
-
-  async function drawGroup(canvasId, list, freq){
-    // fetch all series in parallel (may return null on failure)
-    const fetches = await Promise.all(list.map(s => fetchFRED(s.id, freq)));
-    // replace failures with fallback and note status
-    const dataList = fetches.map((res, i) => {
-      if (res === null || res.length === 0) {
-        logStatus(`${list[i].id}: using fallback sample`, true);
-        return fallbackSeries(list[i].id, freq);
-      } else return res;
-    });
-
-    const buckets = mergeBuckets(dataList, freq); // already limited to MAX_POINTS
-    const palette = ["#2563eb","#dc2626","#059669","#7c3aed","#f59e0b","#0ea5e9","#ef4444","#16a34a"];
-    const datasets = dataList.map((ser, idx) => {
-      const map = mapToBucket(ser, freq);
-      return toDataset(list[idx].label, palette[idx % palette.length], buckets, map);
-    });
-
-    // render Chart.js
-    const ctx = document.getElementById(canvasId).getContext('2d');
-    if (chartRefs[canvasId]) chartRefs[canvasId].destroy();
-    chartRefs[canvasId] = new Chart(ctx, {
-      type: 'line',
-      data: { labels: buckets, datasets },
-      options: {
-        responsive:true, maintainAspectRatio:false,
-        plugins: { legend:{position:'top'}, tooltip:{mode:'index',intersect:false} },
-        interaction:{mode:'index',intersect:false},
-        scales: {
-          x: {
-            ticks: {
-              maxRotation: 0,
-              callback: function(val, idx, ticks){
-                const lb = buckets[val] || '';
-                if (lb.includes('-Q')) return lb.replace('-', ' ');
-                if (lb.includes('-W')) return lb;
-                if (lb.includes('-')) {
-                  const [y,m] = lb.split('-');
-                  if (freq === 'm') return `${m}/${String(y).slice(-2)}`; // MM/YY
-                  return lb;
-                }
-                return lb;
-              }
-            }
-          },
-          y: { grid:{color:'rgba(0,0,0,0.06)'}, ticks:{maxTicksLimit:6} }
-        }
-      }
-    });
-  }
-
-  // Merge buckets across given data series (already limited to MAX_POINTS in mergeBuckets)
-  function mergeBuckets(seriesList, freq){
+  // decide buckets: if at least one real series exists, merge buckets from real series,
+  // else use generated buckets for freq
+  const realSeries = fetchedList.filter(x => Array.isArray(x) && x.length>0);
+  let buckets;
+  if (realSeries.length > 0){
+    // merge buckets from the real series then slice last MAX_POINTS
     const set = new Set();
-    seriesList.forEach(s => s.forEach(p => set.add(toBucket(p.date, freq))));
-    const arr = sortBuckets(Array.from(set));
-    if (arr.length > MAX_POINTS) return arr.slice(-MAX_POINTS);
-    return arr;
+    realSeries.forEach(s => s.forEach(p => set.add(toBucket(p.date, freq))));
+    let arr = sortBuckets(Array.from(set));
+    if (arr.length > MAX_POINTS) arr = arr.slice(-MAX_POINTS);
+    buckets = arr;
+  } else {
+    buckets = generateBucketsForFreq(freq);
   }
 
-  /**************** MAIN LOAD ****************/
-  async function loadAll(){
-    clearStatus();
-    const freq = document.getElementById('timeframe').value; // m/q/a/w
-    // draw each group
-    await drawGroup('inflationChart', SERIES.inflation, freq);
-    await drawGroup('policyChart',    SERIES.policy,    freq);
-    await drawGroup('moneyChart',     SERIES.money,     freq);
-    await drawGroup('growthChart',    SERIES.growth,    freq);
-    await drawGroup('sentimentChart', SERIES.sentiment, freq);
-    await drawGroup('equityChart',    SERIES.equity,    freq);
-    await drawGroup('commoditiesChart', SERIES.commodities, freq);
-    await drawGroup('btcChart',       SERIES.btc,       freq);
-    logStatus("Done ✔");
-    setTimeout(()=> STATUS.classList.add('hidden'), 2500);
+  // build datasets
+  const palette = ["#2563eb","#dc2626","#059669","#7c3aed","#f59e0b","#0ea5e9","#ef4444","#16a34a"];
+  const datasets = [];
+  for (let i=0;i<list.length;i++){
+    const meta = list[i];
+    const fetched = fetchedList[i];
+    if (!fetched || fetched.length === 0){
+      // no data -> draw nulls and dashed grey line (so user sees "no data")
+      const nullMap = new Map(); // empty
+      datasets.push(toDataset(meta.label + ' (no data)', '#9ca3af', buckets, nullMap, {borderDash:[6,6]}));
+    } else {
+      // if meta.transform === 'yoy', compute YoY
+      let seriesToMap = fetched;
+      if (meta.transform === 'yoy'){
+        // choose lag according to freq: month->12, quarter->4, year->1, week->52
+        const lag = freq === 'q' ? 4 : freq === 'a' ? 1 : freq === 'w' ? 52 : 12;
+        // ensure fetched sorted ascending (FRED usually is ascending)
+        seriesToMap = computeYoY(fetched, lag);
+      }
+      const map = mapSeriesToBucket(seriesToMap, freq);
+      datasets.push(toDataset(meta.label, palette[i % palette.length], buckets, map));
+    }
   }
 
-  document.getElementById('timeframe').addEventListener('change', loadAll);
-  window.addEventListener('load', loadAll);
+  // create Chart.js
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  if (chartRefs[canvasId]) chartRefs[canvasId].destroy();
 
-  </script>
+  chartRefs[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: { labels: buckets, datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{position:'top'},
+        tooltip:{callbacks:{
+          label: function(context){
+            const ds = context.dataset;
+            const val = context.parsed.y;
+            if (val === null || val === undefined) return ds.label + ': no data';
+            // formatting: if label contains 'CPI' or 'PCE' -> percent
+            if (/CPI|PCE|Core/i.test(ds.label) || ds.label.includes('(no data)')) {
+              // detect if it's percent by checking meta list - simpler: if dataset label contains 'CPI' or 'PCE'
+              return ds.label + ': ' + Number(val).toFixed(2) + '%';
+            }
+            // price detection
+            if (/Bitcoin|BTC|Gold|WTI|S&P|SP500|Price|USD|Crude/i.test(ds.label)) {
+              return ds.label + ': $' + Number(val).toLocaleString();
+            }
+            // default
+            return ds.label + ': ' + Number(val).toLocaleString();
+          }
+        }}
+      },
+      scales:{
+        x:{ grid:{display:false}, ticks:{maxRotation:0} },
+        y:{ grid:{color:'rgba(0,0,0,0.06)'}, ticks:{maxTicksLimit:6} }
+      }
+    }
+  });
+}
+
+/* ===== Main loader ===== */
+async function loadAll(){
+  clearStatus();
+  const freq = document.getElementById('timeframe').value; // m/q/a/w
+  await drawGroup('inflationChart', SERIES.inflation, freq);
+  await drawGroup('policyChart', SERIES.policy, freq);
+  await drawGroup('moneyChart', SERIES.money, freq);
+  await drawGroup('growthChart', SERIES.growth, freq);
+  await drawGroup('sentimentChart', SERIES.sentiment, freq);
+  await drawGroup('equityChart', SERIES.equity, freq);
+  await drawGroup('commoditiesChart', SERIES.commodities, freq);
+  await drawGroup('btcChart', SERIES.btc, freq);
+  logStatus('Done ✔');
+  setTimeout(()=>STATUS.classList.add('hidden'), 2200);
+}
+
+document.getElementById('timeframe').addEventListener('change', loadAll);
+window.addEventListener('load', loadAll);
+</script>
 </body>
 </html>
